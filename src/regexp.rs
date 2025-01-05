@@ -2,14 +2,17 @@
 
 use std::rc::Rc;
 
+#[derive(Debug)]
 pub enum ReErrorKind {
 	NonAsciiChar,
 	BadSplit,
 	OutOfRange,
 	InvalidChar,
-	InvalidInt
+	InvalidInt,
+	InvalidRange
 }
 
+#[derive(Debug)]
 pub struct ReErrorInfo {
 	at: usize,
 	msg: String
@@ -80,6 +83,44 @@ impl Re {
 			},
 		}
 	}
+
+	pub fn debug_print(&self) {
+		match self {
+			Re::Char(c) => print!("{}", c),
+			Re::Kleen(c) => {
+				print!("(");
+				c.debug_print();
+				print!(")*");
+			},
+			Re::Or(c1, c2) => {
+				print!("(");
+				c1.debug_print();
+				print!("|");
+				c2.debug_print();
+				print!(")");
+			},
+			Re::And(c1, c2) => {
+				print!("(");
+				c1.debug_print();
+				print!("");
+				c2.debug_print();
+				print!(")");
+			},
+			Re::OneOrMore(c) => {
+				print!("(");
+				c.debug_print();
+				print!(")+");
+			},
+			Re::AnyChar => {
+				print!(".");
+			},
+			Re::Repeat(c, a, b) => {
+				print!("(");
+				c.debug_print();
+				print!("){{{a},{b}}}");
+			},
+		}
+	}
 }
 
 fn first_non_ascii(string: &[u8]) -> Option<usize> {
@@ -101,13 +142,14 @@ fn parse_or(string: &[u8], index: usize) -> Result<(Re, usize), ReError> {
 			Ok((Re::Or(Rc::from(left),Rc::from(right)), end_index))
 		}
 		else if sep == ')' {
-			Ok((left, new_index))
+			Ok((left, new_index+1))
 		}
 		else {
-			Err((
-				ReErrorKind::BadSplit,
-				ReErrorInfo{at: new_index, msg: String::from("Expected '('")}
-			))
+			Ok((left, new_index))
+			// Err((
+			// 	ReErrorKind::BadSplit,
+			// 	ReErrorInfo{at: new_index, msg: String::from("Expected '('")}
+			// ))
 		}
 	}
 	else {
@@ -116,7 +158,25 @@ fn parse_or(string: &[u8], index: usize) -> Result<(Re, usize), ReError> {
 }
 
 fn parse_and(string: &[u8], index: usize) -> Result<(Re, usize), ReError> {
-	Ok((Re::AnyChar, index))
+	let (left, after_left_id) = parse_postfix(string, index)?;
+
+	// End of string, do not match more
+	if after_left_id >= string.len() {
+		return Ok((left, after_left_id));
+	}
+	
+	// We have reached a closing parenthesis so we return the reg
+	if string[after_left_id] == ')' as u8 {
+		return Ok((left, after_left_id+1));
+	}
+	if string[after_left_id] == '|' as u8 {
+		return Ok((left, after_left_id));
+	}
+
+	// Find the right reg
+	let (right, after_right_id) = parse_or(string, after_left_id)?;
+
+	Ok((Re::And(Rc::from(left), Rc::from(right)), after_right_id))
 }
 
 fn parse_number(string: &[u8], index: usize) -> Option<(usize, usize)> {
@@ -136,38 +196,46 @@ fn parse_number(string: &[u8], index: usize) -> Option<(usize, usize)> {
 
 fn parse_postfix(string: &[u8], index: usize) -> Result<(Re, usize), ReError> {
 	// match an underlying atom (either a single char or a sub regexp in parenthesis)
-	let (reg, new_index) = parse_atom(string, index)?;
+	let (reg, after_atom_id) = parse_atom(string, index)?;
 
 	// Look for optionnal +, *, {a,b}
-	if new_index >= string.len() {
-		return Ok((reg, new_index));
+	if after_atom_id >= string.len() {
+		return Ok((reg, after_atom_id));
 	}
 
-	if string[new_index] == '*' as u8 {
-		Ok((Re::Kleen(Rc::from(reg)), new_index+1))
+	if string[after_atom_id] == '*' as u8 {
+		Ok((Re::Kleen(Rc::from(reg)), after_atom_id+1))
 	}
-	else if string[new_index] == '+' as u8 {
-		Ok((Re::OneOrMore(Rc::from(reg)), new_index+1))
+	else if string[after_atom_id] == '+' as u8 {
+		Ok((Re::OneOrMore(Rc::from(reg)), after_atom_id+1))
 	}
-	else if string[new_index] == '{' as u8 {
+	else if string[after_atom_id] == '{' as u8 {
 		// try to parse the rest 
-		match parse_number(string, new_index) {
-			None => Err((ReErrorKind::InvalidInt, ReErrorInfo{at: new_index, msg: String::from("Expected a positive integer")})),
-			Some((left, id)) => {
-				if id >= string.len() || string[id] != ',' as u8 {
-					return Err((ReErrorKind::OutOfRange, ReErrorInfo{at: new_index, msg: String::from("Expected a ',' for postfix [reg]{a,b}")}));
+		match parse_number(string, after_atom_id+1) {
+			None => Err((ReErrorKind::InvalidInt, ReErrorInfo{at: after_atom_id+1, msg: String::from("Expected a positive integer")})),
+			Some((left, after_left_id)) => {
+				if after_left_id >= string.len() || string[after_left_id] != ',' as u8 {
+					return Err((ReErrorKind::OutOfRange, ReErrorInfo{at: after_atom_id, msg: String::from("Expected a ',' for postfix [reg]{a,b}")}));
 				}
-				match parse_number(string, id+1) {
-					None => Err((ReErrorKind::InvalidInt, ReErrorInfo{at: id, msg: String::from("Expected a positive integer")})),
-					Some((right, idd)) => {
-						Ok((Re::Repeat(Rc::from(reg), left, right), idd))
+				match parse_number(string, after_left_id+1) {
+					None => Err((ReErrorKind::InvalidInt, ReErrorInfo{at: after_left_id, msg: String::from("Expected a positive integer")})),
+					Some((right, after_right_id)) => {
+						if left > right {
+							return Err((ReErrorKind::InvalidRange, ReErrorInfo{at: after_atom_id, msg: String::from("left number should be lower than or equal to the right one")}));
+						}
+						
+						if after_right_id >= string.len() || string[after_right_id] != '}' as u8 {
+							return Err((ReErrorKind::InvalidChar, ReErrorInfo{at: after_left_id, msg: String::from("Expected a '}'")}));
+						}
+
+						Ok((Re::Repeat(Rc::from(reg), left, right), after_right_id+1))
 					}
 				}
 			}
 		}
 	}
 	else {
-		Ok((reg, new_index))
+		Ok((reg, after_atom_id))
 	}
 }
 
@@ -202,9 +270,9 @@ fn parse_atom(string: &[u8], index: usize) -> Result<(Re,usize), ReError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::regexp::{parse_atom, Re};
+    use crate::regexp::{parse_atom, Re, ReErrorKind};
 
-    use super::{first_non_ascii, parse_number};
+    use super::{first_non_ascii, parse_number, parse_postfix};
 
 	#[test]
 	fn parse_integer() {
@@ -246,5 +314,40 @@ mod tests {
 			Ok(_) => assert!(false),
 			Err(_) => ()
 		}
+	}
+
+	#[test]
+	fn reg_equality() {
+		let reg1 = Re::AnyChar;
+		let reg2 = Re::Kleen(std::rc::Rc::from(Re::AnyChar));
+
+		assert!(reg1.is_equal(&reg1));
+		assert!(!reg1.is_equal(&reg2));
+	}
+
+	#[test]
+	fn postfix_parsing() {
+		let string = "a{22,144}a{144,22}aa+*b".as_bytes();
+
+		match parse_postfix(string, 0) {
+			Err(_) => assert!(false),
+			Ok((reg, index)) => {
+				assert_eq!(index, 9);
+				let r = Re::Repeat(std::rc::Rc::from(Re::Char('a')), 22, 144);
+				assert!(reg.is_equal(&r));
+			}
+		}
+
+		match parse_postfix(string, 9) {
+			Err((err_kind, _)) => {
+				assert!(matches!(err_kind, ReErrorKind::InvalidRange));
+			},
+			Ok(_) => assert!(false)
+		}
+	}
+
+	#[test]
+	fn and_parsing() {
+		
 	}
 }
