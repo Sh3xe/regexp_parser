@@ -1,6 +1,6 @@
 #![allow(unused, dead_code)]
-
 use std::rc::Rc;
+mod automaton;
 
 #[derive(Debug)]
 pub enum ReErrorKind {
@@ -30,6 +30,47 @@ pub enum Re {
 	AnyChar
 }
 
+impl PartialEq for Re {
+	fn eq(&self, other: &Self) -> bool {
+		match self {
+			Re::Char(c1) => match other {
+				Re::Char(c2) => c1 == c2,
+				_ => false
+			},
+			Re::Kleen(c1) => match other {
+				Re::Kleen(c2) => c1.eq(c2),
+				_ => false
+			},
+			Re::Or(c11, c12) => match other {
+				Re::Or(c21, c22) => c11.eq(c21) && c12.eq(c22),
+				_ => false
+			},
+			Re::And(c11, c12) => match other {
+				Re::And(c21, c22) => c11.eq(c21) && c12.eq(c22),
+				_ => false
+			},
+			Re::OneOrMore(c1) => match other {
+				Re::OneOrMore(c2) => c1.eq(c2),
+				_ => false
+			},
+			Re::AnyChar => match other {
+				Re::AnyChar => true,
+				_ => false
+			},
+			Re::Repeat(c1, a1, b1) => match other {
+				Re::Repeat(c2, a2, b2) => c1.eq(c2) && a1 == a2 && b1 == b2,
+				_ => false
+			},
+		}
+	}
+
+	fn ne(&self, other: &Self) -> bool {
+		!self.eq(other)
+	}
+}
+
+impl Eq for Re {}
+
 impl Re {
 	pub fn parse_regexp(string: &str) -> Result<Self, ReError> {
 		let bytes = string.as_bytes();
@@ -49,39 +90,6 @@ impl Re {
 
 	pub fn match_one(&self, string: &str) -> String {
 		String::from("Nothing")
-	}
-
-	pub fn is_equal(&self, other: &Self) -> bool {
-		match self {
-			Re::Char(c1) => match other {
-				Re::Char(c2) => c1 == c2,
-				_ => false
-			},
-			Re::Kleen(c1) => match other {
-				Re::Kleen(c2) => c1.is_equal(c2),
-				_ => false
-			},
-			Re::Or(c11, c12) => match other {
-				Re::Or(c21, c22) => c11.is_equal(c21) && c12.is_equal(c22),
-				_ => false
-			},
-			Re::And(c11, c12) => match other {
-				Re::And(c21, c22) => c11.is_equal(c21) && c12.is_equal(c22),
-				_ => false
-			},
-			Re::OneOrMore(c1) => match other {
-				Re::OneOrMore(c2) => c1.is_equal(c2),
-				_ => false
-			},
-			Re::AnyChar => match other {
-				Re::AnyChar => true,
-				_ => false
-			},
-			Re::Repeat(c1, a1, b1) => match other {
-				Re::Repeat(c2, a2, b2) => c1.is_equal(c2) && a1 == a2 && b1 == b2,
-				_ => false
-			},
-		}
 	}
 
 	pub fn debug_print(&self) {
@@ -270,9 +278,11 @@ fn parse_atom(string: &[u8], index: usize) -> Result<(Re,usize), ReError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::regexp::{parse_atom, Re, ReErrorKind};
+	use std::rc::Rc;
 
-    use super::{first_non_ascii, parse_number, parse_postfix};
+	use crate::regexp::{parse_atom, Re, ReErrorKind};
+
+	use super::{first_non_ascii, parse_number, parse_postfix};
 
 	#[test]
 	fn parse_integer() {
@@ -297,7 +307,7 @@ mod tests {
 		match parse_atom(string, 0) {
 			Ok((reg, index)) => {
 				assert_eq!(index, 1);
-				assert!(reg.is_equal(&Re::Char('a')))
+				assert!(reg == Re::Char('a'));
 			},
 			Err(_) => assert!(false)
 		}
@@ -305,7 +315,7 @@ mod tests {
 		match parse_atom(string, 1) {
 			Ok((reg, index)) => {
 				assert_eq!(index, 2);
-				assert!(reg.is_equal(&Re::AnyChar))
+				assert!(reg == Re::AnyChar)
 			},
 			Err(_) => assert!(false)
 		}
@@ -319,10 +329,10 @@ mod tests {
 	#[test]
 	fn reg_equality() {
 		let reg1 = Re::AnyChar;
-		let reg2 = Re::Kleen(std::rc::Rc::from(Re::AnyChar));
+		let reg2 = Re::Kleen(Rc::from(Re::AnyChar));
 
-		assert!(reg1.is_equal(&reg1));
-		assert!(!reg1.is_equal(&reg2));
+		assert!(reg1 == reg1);
+		assert!(reg1 != reg2);
 	}
 
 	#[test]
@@ -333,8 +343,8 @@ mod tests {
 			Err(_) => assert!(false),
 			Ok((reg, index)) => {
 				assert_eq!(index, 9);
-				let r = Re::Repeat(std::rc::Rc::from(Re::Char('a')), 22, 144);
-				assert!(reg.is_equal(&r));
+				let r = Re::Repeat(Rc::from(Re::Char('a')), 22, 144);
+				assert!(reg == r);
 			}
 		}
 
